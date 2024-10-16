@@ -1,4 +1,3 @@
-
 from card_seg import Cardseg
 from car_id_detect import CaridDetect
 import cv2
@@ -9,6 +8,7 @@ def car_lrp_for_img(img):
     if seg_sign ==0:
         print('未找到车牌')
     else:
+        print("车牌号是：")
         print("".join(pre))
 
 
@@ -20,5 +20,5 @@ def car_lsp_for_video(video_path):
 
 
 if __name__=="__main__":
-    img=cv2.imread("./test_img/yello.jpg",cv2.IMREAD_COLOR)
+    img=cv2.imread("./test_img/blue.jpg",cv2.IMREAD_COLOR)
     car_lrp_for_img(img)

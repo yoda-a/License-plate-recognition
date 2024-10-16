@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 from numpy.linalg import norm
 import os
+from sklearn.model_selection import GridSearchCV
+from joblib import Parallel, delayed
 
 
 SZ = 20
@@ -69,20 +71,35 @@ def preprocess_hog(digits):
 		mag_cells = mag[:10,:10], mag[10:,:10], mag[:10,10:], mag[10:,10:]
 		hists = [np.bincount(b.ravel(), m.ravel(), bin_n) for b, m in zip(bin_cells, mag_cells)]
 		hist = np.hstack(hists)
-		
+
 		# transform to Hellinger kernel
 		eps = 1e-7
 		hist /= hist.sum() + eps
 		hist = np.sqrt(hist)
 		hist /= norm(hist) + eps
-		
+
 		samples.append(hist)
 	return np.float32(samples)
 
+#通过对输入图像进行旋转和缩放，augment_image 函数生成了多个变换版本的图像，这些增强图像可以用于训练机器学习模型。这样的数据增强技术有助于提升模型的泛化能力
+def augment_image(img):
+	# Data augmentation: Rotate, Scale, and Translate
+	augmentations = []
+	for angle in [0, 15, -15]:  # Add rotation
+		M = cv2.getRotationMatrix2D((SZ / 2, SZ / 2), angle, 1)
+		rotated = cv2.warpAffine(img, M, (SZ, SZ))
+		augmentations.append(rotated)
+
+	for scale in [0.8, 1.2]:  # Add scaling
+		scaled = cv2.resize(img, None, fx=scale, fy=scale)
+		scaled_cropped = cv2.resize(scaled, (SZ, SZ))
+		augmentations.append(scaled_cropped)
+
+	return augmentations
 
 class StatModel(object):
 	def load(self, fn):
-		self.model = self.model.load(fn)  
+		self.model = self.model.load(fn)
 	def save(self, fn):
 		self.model.save(fn)
 
@@ -106,62 +123,86 @@ class SVM(StatModel):
 		self.model = SVM(C=1, gamma=0.5)
 		#识别中文
 		self.modelchinese = SVM(C=1, gamma=0.5)
-		if os.path.exists("./train_dat/svm.dat"):
-			self.model.load("./train_dat/svm.dat")
+		if os.path.exists("./train_dat/svm1.dat"):
+			self.model.load("./train_dat/svm1.dat")
 		else:
 			chars_train = []
 			chars_label = []
-			
-			for root, dirs, files in os.walk("./train/chars2"):
+			#directory = "D:\\综合\\学习\\企业实训\\project\\license-plate-recognition-master\\train\\chars2"
+			for root, dirs, files in os.walk("train\\chars2"):
 				if len(os.path.basename(root)) > 1:
 					continue
 				root_int = ord(os.path.basename(root))
 				for filename in files:
 					filepath = os.path.join(root,filename)
 					digit_img = cv2.imread(filepath)
+					if digit_img is None:
+						print(f"Failed to read image: {filepath}")  # 打印未能读取的文件
+						continue  # 跳过未读取的图像
 					digit_img = cv2.cvtColor(digit_img, cv2.COLOR_BGR2GRAY)
 					chars_train.append(digit_img)
 					#chars_label.append(1)
 					chars_label.append(root_int)
-			
+
 			chars_train = list(map(deskew, chars_train))
 			chars_train = preprocess_hog(chars_train)
 			#chars_train = chars_train.reshape(-1, 20, 20).astype(np.float32)
 			chars_label = np.array(chars_label)
 			print(chars_train.shape)
 			self.model.train(chars_train, chars_label)
+			# 调试信息
+			print(f"chars_train shape after processing: {np.array(chars_train).shape}")
+			print(f"chars_label shape: {chars_label.shape}")
 
-		if os.path.exists("./train_dat/svmchinese.dat"):
-			self.modelchinese.load("./train_dat/svmchinese.dat")
+			if len(chars_train) == 0:
+				print("No valid training images found.")
+			else:
+				self.model.train(chars_train, chars_label)
+
+        # Load Chinese characters
+		if os.path.exists("./train_dat/svmchinese1.dat"):
+			self.modelchinese.load("./train_dat/svmchinese1.dat")
 		else:
 			chars_train = []
 			chars_label = []
-			for root, dirs, files in os.walk("./train/charsChinese"):
+			for root, dirs, files in os.walk("train\\charsChinese"):
 				if not os.path.basename(root).startswith("zh_"):
 					continue
 				pinyin = os.path.basename(root)
 				index = provinces.index(pinyin) + PROVINCE_START + 1 #1是拼音对应的汉字
-				for filename in files:
+				augmented_images = Parallel(n_jobs=-1)(
+					delayed(augment_image)(cv2.imread(os.path.join(root, filename)))
+					for filename in files
+				)
+				for images in augmented_images:
+					for img in images:
+						img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+						chars_train.append(img)
+						chars_label.append(index)
+				"""for filename in files:
 					filepath = os.path.join(root,filename)
 					digit_img = cv2.imread(filepath)
 					digit_img = cv2.cvtColor(digit_img, cv2.COLOR_BGR2GRAY)
 					chars_train.append(digit_img)
 					#chars_label.append(1)
-					chars_label.append(index)
+					chars_label.append(index)"""
 			chars_train = list(map(deskew, chars_train))
 			chars_train = preprocess_hog(chars_train)
 			#chars_train = chars_train.reshape(-1, 20, 20).astype(np.float32)
 			chars_label = np.array(chars_label)
 			print(chars_train.shape)
 			self.modelchinese.train(chars_train, chars_label)
+			self.save_traindata()
 
 		return self.model, self.modelchinese
 
 	def save_traindata(self):
-		if not os.path.exists("./train_dat/svm.dat"):
-			self.model.save("./train_dat/svm.dat")
-		if not os.path.exists("./train_dat/svmchinese.dat"):
-			self.modelchinese.save("./train_dat/svmchinese.dat")
+		if not os.path.exists("./train_dat/svm1.dat"):
+			print("svm1保存成功!!!")
+			self.model.save("./train_dat/svm1.dat")
+		if not os.path.exists("./train_dat/svmchinese1.dat"):
+			print("svmchinese1保存成功!!!")
+			self.modelchinese.save("./train_dat/svmchinese1.dat")
 
 
 
